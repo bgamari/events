@@ -18,8 +18,11 @@ module EventExtractor
     -- * Low-level primitives
   , untilJust
   , yieldJust
+    -- * Utilities
+  , eventTime
   ) where
 
+import Data.Foldable
 import Data.Functor.Identity
 import qualified Data.Map.Strict as M
 import Control.Monad
@@ -35,7 +38,7 @@ eventTime = Time.fromNanoseconds . fromIntegral . evTime
 type EventExtractor a = EventExtractorT Identity a
 type EventExtractorT m a = ProcessT m Event a
 
-runExtractor :: EventExtractor a -> [Event] -> [a]
+runExtractor :: Foldable f => EventExtractor a -> f Event -> [a]
 runExtractor extractor events = run $ supply events extractor
 
 untilJust :: (a -> Maybe b) -> Plan (Is a) o b

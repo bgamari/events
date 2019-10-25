@@ -14,10 +14,12 @@ import Data.Foldable
 import Data.Word
 import Data.Int
 import Data.Vector.Unboxed.Deriving
+import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as VU
 import qualified Data.Vector.Unboxed.Mutable as VUM
 import qualified Data.Vector.Generic as VG
 import qualified Data.Vector.Generic.Mutable as VGM
+import Data.Vector.Algorithms.Intro (sortBy)
 
 import Data.Functor.Identity
 import qualified Data.Map.Strict as M
@@ -33,12 +35,11 @@ import Mean
 import KeyedVector
 import EventExtractor
 
-data GenEvent t a
-  = PointEvent !t !a
-  | IntervalEvent !t !a
-
-eventTime :: Event -> Time
-eventTime = Time.fromNanoseconds . fromIntegral . evTime
+sortEvents :: [Event] -> V.Vector Event
+sortEvents events = V.create $ do
+  v <- V.unsafeThaw (V.fromList events)
+  sortBy (\e1 e2 -> compare (evTime e1) (evTime e2)) v
+  return v
 
 newtype Bytes
   = Bytes { getBytes :: Word64 }
@@ -50,6 +51,18 @@ newtype PointEventList v a
 
 newtype IntervalEventList v a
   = IntervalEventList (KeyedVector v Time a)
+
+matchUserMessageEvent :: (String -> Maybe a) -> EventInfo -> Maybe a
+matchUserMessageEvent f (UserMessage msg) = f msg
+matchUserMessageEvent _ _ = Nothing
+
+matchUserMarkerEvent :: (String -> Maybe a) -> EventInfo -> Maybe a
+matchUserMarkerEvent f (UserMarker msg) = f msg
+matchUserMarkerEvent _ _ = Nothing
+
+matchMessageEvent :: (String -> Maybe a) -> EventInfo -> Maybe a
+matchMessageEvent f (Message msg) = f msg
+matchMessageEvent _ _ = Nothing
 
 data GC
   = GC { gcInterval :: !Interval

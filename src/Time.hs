@@ -10,7 +10,7 @@ import Linear.Affine
 import Linear.Vector
 
 newtype Nanoseconds
-  = Nanoseconds { getNanosecond :: Int64 }
+  = Nanoseconds { getNanoseconds :: Int64 }
   deriving (Eq, Ord, Show, Enum, Num, Real)
 
 type Time = Time' Nanoseconds
@@ -47,12 +47,16 @@ instance Applicative TimeDiff' where
 instance Additive TimeDiff' where
   zero = TimeDiff 0
 
+divTimeDiff :: Fractional a => TimeDiff' a -> TimeDiff' a -> a
+divTimeDiff (TimeDiff x) (TimeDiff y) = x / y
+
 diffFromNanoseconds :: Int64 -> TimeDiff
 diffFromNanoseconds = TimeDiff . Nanoseconds
 
-diffFromMicroseconds, diffFromMilliseconds :: Integral a => a -> TimeDiff
+diffFromMicroseconds, diffFromMilliseconds, diffFromSeconds :: Integral a => a -> TimeDiff
 diffFromMicroseconds t = TimeDiff (fromIntegral t * 1000)
 diffFromMilliseconds t = TimeDiff (fromIntegral t * 1000000)
+diffFromSeconds      t = TimeDiff (fromIntegral t * 1000000000)
 
 -- | A closed interval of 'Time'.
 data Interval

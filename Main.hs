@@ -9,11 +9,13 @@ import GHC.RTS.Events as Event
 import GHC.RTS.Events.Incremental as Event
 import qualified Data.ByteString.Lazy as BSL
 import Diagrams.Backend.SVG
+import qualified Diagrams.TwoD.Text as Diagrams
 import Diagrams
 import Data.Machine
 import Data.Colour
 import Data.Colour.Names as Colours
 import Linear.Affine
+import Linear
 
 import EventExtractor
 import EventLog
@@ -27,12 +29,49 @@ toSeconds (Time t) = realToFrac t / 1e9
 diffToSeconds :: TimeDiff -> Double
 diffToSeconds (TimeDiff t) = realToFrac t / 1e9
 
+timeAxis :: (Renderable (Diagrams.Text Double) b, Renderable (Path V2 Double) b)
+         => Interval
+         -> TimeDiff
+         -> QDiagram b V2 Double Any
+timeAxis int@(Interval t0 t1) dt =
+    stroke axis <> timeTicks int dt
+  where
+    axis =
+      pathFromTrailAt
+        (trailFromVertices [p2 (toSeconds t0,0), p2 (toSeconds t1,0)])
+        (p2 (toSeconds t0, 0))
+
+timeTicks :: (Renderable (Diagrams.Text Double) b, Renderable (Path V2 Double) b)
+          => Interval -> TimeDiff
+          -> QDiagram b V2 Double Any
+timeTicks (Interval t0 t1) dt =
+  timeTicks'
+    [ (t, label)
+    | t <- [t0,t0 .+^ dt..t1]
+    , let Time (Nanoseconds t') = t
+    , let label = show $ fmap realToFrac (t .-. zeroTime) `divTimeDiff` fmap realToFrac (diffFromMilliseconds 1000)
+    ]
+
+timeTicks' :: (Renderable (Diagrams.Text Double) b, Renderable (Path V2 Double) b)
+           => [(Time, String)]
+           -> QDiagram b V2 Double Any
+timeTicks' = foldMap tick
+  where
+    tick (t,label) =
+      translateX (toSeconds t) $
+      vrule 0.5 === (strutY 0.5 <> text label)
+
+eventPlot :: [Time] -> Path V2 Double
+eventPlot = foldMap toEvent
+  where
+    toEvent x = translateX (toSeconds x) (circle 0.1 # centerXY)
+
 durationPlot :: [Interval] -> Path V2 Double
 durationPlot = foldMap toDuration
   where
     toDuration :: Interval -> Path V2 Double
     toDuration x =
-        translateX x0 $ rect width 1
+        translateX x0 $ alignL $ rect width 1
       where
         x0 = toSeconds $ intervalStart x
         width = diffToSeconds $ intervalStart x .-. intervalEnd x
@@ -83,9 +122,8 @@ gcPausesPlot = durationPlot . map gcInterval
 readIt :: IO [Event]
 readIt = do
   Right (elog, _) <- Event.readEventLog <$> BSL.readFile "hi.eventlog"
-  let events = Event.events $ Event.dat elog
-  length events `seq` return events
-  --return events
+  let events = Event.sortEvents $ Event.events $ Event.dat elog
+  return $ events
 
 main :: IO ()
 main = do
@@ -102,6 +140,16 @@ plotIt events = renderSVG "hi.svg" size (plotDiagram events)
     size :: SizeSpec V2 Double
     size = dims $ V2 600 400
 
+timelines :: forall b. (Renderable (Diagrams.Text Double) b)
+          => [(String, QDiagram b V2 Double Any)]
+          -> QDiagram b V2 Double Any
+timelines xs =
+    vsep 1
+      [ align (V2 1 0) (strutX 10 <> text label) <>
+        timeline
+      | (label, timeline) <- xs
+      ]
+
 plotDiagram :: [Event] -> QDiagram SVG V2 Double Any
 plotDiagram events = dia
   where
@@ -111,7 +159,7 @@ plotDiagram events = dia
     smoothBytesSamples :: [(Time, Bytes)] -> [(Time, Double)]
     smoothBytesSamples samples =
       map (\bin -> (binStart bin, Mean.getMean $ binValue bin))
-      $ bin (diffFromMilliseconds 100)
+      $ bin (diffFromMilliseconds 200)
         [ (t, Mean.singleton $ realToFrac y / 1e8)
         | (t, Bytes y) <- samples
         ]
@@ -120,15 +168,53 @@ plotDiagram events = dia
     meanHeapLive = smoothBytesSamples heapLiveEvents
 
     dia :: QDiagram SVG V2 Double Any
-    dia = scaleY 3 $ scaleX 10 $ vsep 1
-      [ heatMap heatToColor (diffFromMilliseconds 100) (map fst heapSizeEvents)
-      , stroke (linePlot meanHeapSize) # lw 0.1 -- <> stroke (barPlot meanHeapSize)
-      , stroke (linePlot $ fmap (fmap $ (/1e8) . realToFrac) heapLiveEvents) # lw 0.1 # lc Colours.purple
-      , stroke (gcPausesPlot
-          [ gc
-          | gc <- runExtractor garbageCollections events
-          , gcGeneration gc == 1 ]) # fc Colours.orange # lw 0
-      , stroke (durationPlot $ runExtractor nonmovingMarkIntervals events) # fc Colours.blue # lw 0
-      , stroke (durationPlot $ runExtractor nonmovingSweepIntervals events) # fc Colours.grey # lw 0
+    dia = timelines
+      [ ( "heap size"
+        , heatMap heatToColor (diffFromMilliseconds 100) (map fst heapSizeEvents)
+          # scaleY 3
+        )
+      , ( "heap size"
+        , stroke (linePlot meanHeapSize)
+          # lw 0.1 # scaleY 3
+        ) -- <> stroke (barPlot meanHeapSize)
+      , ( "live heap"
+        , stroke (linePlot $ fmap (fmap $ (/1e8) . realToFrac) heapLiveEvents)
+          # lw 0.1 # lc Colours.purple # scaleY 3
+        )
+      , ( "major gc starts"
+        , stroke (eventPlot
+            [ intervalStart $ gcInterval gc
+            | gc <- runExtractor garbageCollections events
+            , gcGeneration gc == 1 ])
+          # fc Colours.orange # lw 0
+        )
+      , ( "major gc pauses"
+        , stroke (gcPausesPlot
+            [ gc
+            | gc <- runExtractor garbageCollections events
+            , gcGeneration gc == 1 ])
+          # fc Colours.orange # lw 0 # scaleY 3
+        )
+      , ( "marking"
+        , stroke (durationPlot $ runExtractor nonmovingMarkIntervals events)
+          # fc Colours.blue # lw 0
+        )
+      , ( "sweeping"
+        , stroke (durationPlot $ runExtractor nonmovingSweepIntervals events)
+          # fc Colours.grey # lw 0
+        )
+      , ( "syncing"
+        , stroke (durationPlot $ runExtractor nonmovingSyncIntervals events)
+          # fc Colours.grey # lw 0
+        )
+      , ( "flushes"
+        , stroke (eventPlot $ runExtractor nonmovingUpdRemSetFlushes events)
+          # fc Colours.pink # lw 0
+        )
+      , ( "time"
+        , timeAxis (Interval (seconds 0) (seconds 40)) (diffFromSeconds 5)
+          # lw 0.1 # fontSize 5
+        )
       ]
 
+seconds n = zeroTime .+^ (n *^ diffFromSeconds 1)
