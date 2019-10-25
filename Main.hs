@@ -83,7 +83,9 @@ gcPausesPlot = durationPlot . map gcInterval
 readIt :: IO [Event]
 readIt = do
   Right (elog, _) <- Event.readEventLog <$> BSL.readFile "hi.eventlog"
-  return $ Event.events $ Event.dat elog
+  let events = Event.events $ Event.dat elog
+  length events `seq` return events
+  --return events
 
 main :: IO ()
 main = do
@@ -95,7 +97,13 @@ main = do
   plotIt events
 
 plotIt :: [Event] -> IO ()
-plotIt events = renderSVG "hi.svg" size dia
+plotIt events = renderSVG "hi.svg" size (plotDiagram events)
+  where
+    size :: SizeSpec V2 Double
+    size = dims $ V2 600 400
+
+plotDiagram :: [Event] -> QDiagram SVG V2 Double Any
+plotDiagram events = dia
   where
     heapSizeEvents = runExtractor heapSizeSamples events
     heapLiveEvents = runExtractor heapLiveSamples events
@@ -110,8 +118,6 @@ plotIt events = renderSVG "hi.svg" size dia
 
     meanHeapSize = smoothBytesSamples heapSizeEvents
     meanHeapLive = smoothBytesSamples heapLiveEvents
-
-    size = dims $ V2 600 400 :: SizeSpec V2 Double
 
     dia :: QDiagram SVG V2 Double Any
     dia = scaleY 3 $ scaleX 10 $ vsep 1
