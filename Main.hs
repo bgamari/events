@@ -15,6 +15,7 @@ import Data.Colour
 import Data.Colour.Names as Colours
 import Linear.Affine
 
+import EventExtractor
 import EventLog
 import Bin
 import Time
