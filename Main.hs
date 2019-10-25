@@ -13,6 +13,7 @@ import Diagrams
 import Data.Machine
 import Data.Colour
 import Data.Colour.Names as Colours
+import Linear.Affine
 
 import EventLog
 import Bin
@@ -22,10 +23,18 @@ import Mean
 toSeconds :: Time -> Double
 toSeconds (Time t) = realToFrac t / 1e9
 
+diffToSeconds :: TimeDiff -> Double
+diffToSeconds (TimeDiff t) = realToFrac t / 1e9
+
 durationPlot :: [Interval] -> Path V2 Double
 durationPlot = foldMap toDuration
   where
-    toDuration = 
+    toDuration :: Interval -> Path V2 Double
+    toDuration x =
+        translateX x0 $ rect width 1
+      where
+        x0 = toSeconds $ intervalStart x
+        width = diffToSeconds $ intervalStart x .-. intervalEnd x
 
 barPlot :: [(Time, Double)] -> Path V2 Double
 barPlot = foldMap toBar
@@ -61,7 +70,7 @@ heatMap fillColor binSize xs =
           rect width 1 # fcA fill # lw 0
         where
           fill = fillColor maxBin $ getSum $ binValue bin
-          width = toSeconds $ zeroTime `addTime` binSize
+          width = diffToSeconds binSize
    in hcat $ map toBinRect bins
 
 heatToColor :: Real a => a -> a -> AlphaColour Double
@@ -84,7 +93,7 @@ main = do
   --      # lc black # lw 0.5
   let size = dims $ V2 600 400 :: SizeSpec V2 Double
   renderSVG "hi.svg" size $ scaleX 10
-    $ heatMap heatToColor (fromMilliseconds 100) (map fst heapSizeEvents)
+    $ heatMap heatToColor (diffFromMilliseconds 100) (map fst heapSizeEvents)
       ===
       strutY 2
       ===
@@ -94,7 +103,7 @@ main = do
           ]
         <> barPlot
             (map (\bin -> (binStart bin, Mean.getMean $ binValue bin))
-             $ bin (fromMilliseconds 100)
+             $ bin (diffFromMilliseconds 100)
               [ (t, Mean.singleton $ realToFrac y / 1e8)
               | (t,BytesAllocated y) <- heapSizeEvents
               ])

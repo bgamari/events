@@ -36,6 +36,9 @@ data GenEvent t a
   = PointEvent !t !a
   | IntervalEvent !t !a
 
+eventTime :: Event -> Time
+eventTime = Time.fromNanoseconds . fromIntegral . evTime
+
 newtype BytesAllocated
   = BytesAllocated Word64
   deriving stock (Eq, Ord, Show)
@@ -71,10 +74,10 @@ type EventExtractorT m a = ProcessT m Event a
 garbageCollections :: EventExtractor GC
 garbageCollections = repeatedly $ do
   t0 <- untilJust
-      $ \case Event{evTime=t, evSpec=StartGC} -> Just (Time t)
+      $ \case ev@Event{evSpec=StartGC} -> Just (eventTime ev)
               _ -> Nothing
   (t1, gen) <- untilJust
-      $ \case Event{evTime=t, evSpec=GCStatsGHC{..}} -> Just (Time t, gen)
+      $ \case ev@Event{evSpec=GCStatsGHC{..}} -> Just (eventTime ev, gen)
               _ -> Nothing
   yield $ GC { gcInterval = Interval t0 t1
              , gcGeneration = gen
@@ -83,7 +86,7 @@ garbageCollections = repeatedly $ do
 heapSizes :: EventExtractor (Time, BytesAllocated)
 heapSizes = repeatedly $ do
   yieldJust $ \case
-    Event{evTime=t, evSpec=HeapSize{sizeBytes=n}} -> Just (Time t, BytesAllocated n)
+    ev@Event{evSpec=HeapSize{sizeBytes=n}} -> Just (eventTime ev, BytesAllocated n)
     _ -> Nothing
 
 newtype Capability
@@ -101,12 +104,12 @@ derivingUnbox "ThreadId" [t| ThreadId -> Events.ThreadId |] [| getThreadId |] [|
 capThreads :: Capability -> EventExtractor (Interval, ThreadId)
 capThreads cap = repeatedly $ do
   (t0, tid) <- untilJust $ \case
-    Event{evTime=t, evSpec=RunThread tid, evCap=Just cap'}
-      | Capability cap' == cap -> Just (Time t, ThreadId tid)
+    ev@Event{evSpec=RunThread tid, evCap=Just cap'}
+      | Capability cap' == cap -> Just (eventTime ev, ThreadId tid)
     _ -> Nothing
   t1 <- untilJust $ \case
-    Event{evTime=t, evSpec=StopThread _ _, evCap=Just cap'}
-      | Capability cap' == cap -> Just (Time t)
+    ev@Event{evSpec=StopThread _ _, evCap=Just cap'}
+      | Capability cap' == cap -> Just (eventTime ev)
     _ -> Nothing
   yield (Interval t0 t1, tid)
 
@@ -119,8 +122,8 @@ runIt = runIdentity . runItM
 capThreads' :: EventExtractorT (State (M.Map Capability (Time, ThreadId))) (Interval, Capability, ThreadId)
 capThreads' = repeatedly $ do
   (cap, t0, tid) <- untilJust $ \case
-    Event{evTime=t, evSpec=RunThread tid, evCap=Just cap}
-      -> Just (Capability cap, Time t, ThreadId tid)
+    ev@Event{evSpec=RunThread tid, evCap=Just cap}
+      -> Just (Capability cap, eventTime ev, ThreadId tid)
     _ -> Nothing
   s <- lift get
   case M.lookup cap s of

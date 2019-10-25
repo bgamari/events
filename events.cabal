@@ -21,6 +21,7 @@ library
                        Time
   build-depends:       base >=4.12 && <4.13,
                        containers,
+                       linear,
                        machines,
                        ghc-events,
                        transformers,
@@ -35,6 +36,7 @@ executable events
   -- other-extensions:
   build-depends:       base >=4.12 && <4.13,
                        bytestring,
+                       linear,
                        colour,
                        diagrams-lib,
                        diagrams-svg,

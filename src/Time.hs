@@ -1,33 +1,58 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Time where
 
 import Data.Int
 import Data.Word
+import Linear.Affine
+import Linear.Vector
 
-newtype Time
-  = Time Word64
-  deriving (Eq, Ord, Show, Enum)
+newtype Nanoseconds
+  = Nanoseconds { getNanosecond :: Int64 }
+  deriving (Eq, Ord, Show, Enum, Num, Real)
 
-zeroTime :: Time
+type Time = Time' Nanoseconds
+
+newtype Time' a
+  = Time a
+  deriving (Eq, Ord, Show, Enum, Functor)
+
+instance Applicative Time' where
+  pure = Time
+  Time f <*> Time x = Time (f x)
+
+instance Affine Time' where
+  type Diff Time' = TimeDiff'
+  Time x .-. Time y = TimeDiff (x-y)
+  Time x .+^ TimeDiff y= Time (x+y)
+
+zeroTime :: Num a => Time' a
 zeroTime = Time 0
 
-newtype TimeDiff
-  = TimeDiff Int64
-  deriving (Eq, Ord, Show, Enum, Num)
+fromNanoseconds :: Int64 -> Time
+fromNanoseconds = Time . Nanoseconds
 
-fromNanoseconds :: Int64 -> TimeDiff
-fromNanoseconds t = TimeDiff t
+type TimeDiff = TimeDiff' Nanoseconds
 
-fromMicroseconds, fromMilliseconds :: Integral a => a -> TimeDiff
-fromMicroseconds t = TimeDiff (fromIntegral t * 1000)
-fromMilliseconds t = TimeDiff (fromIntegral t * 1000000)
+newtype TimeDiff' a
+  = TimeDiff a
+  deriving (Eq, Ord, Show, Enum, Functor)
 
-addTime :: Time -> TimeDiff -> Time
-addTime (Time x) (TimeDiff y)
-  | let z = fromIntegral x + y
-  , z >= 0 = Time (fromIntegral z)
-  | otherwise = error "addTime: negative time"
+instance Applicative TimeDiff' where
+  pure = TimeDiff
+  TimeDiff f <*> TimeDiff x = TimeDiff (f x)
+
+instance Additive TimeDiff' where
+  zero = TimeDiff 0
+
+diffFromNanoseconds :: Int64 -> TimeDiff
+diffFromNanoseconds = TimeDiff . Nanoseconds
+
+diffFromMicroseconds, diffFromMilliseconds :: Integral a => a -> TimeDiff
+diffFromMicroseconds t = TimeDiff (fromIntegral t * 1000)
+diffFromMilliseconds t = TimeDiff (fromIntegral t * 1000000)
 
 -- | A closed interval of 'Time'.
 data Interval
