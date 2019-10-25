@@ -39,8 +39,8 @@ data GenEvent t a
 eventTime :: Event -> Time
 eventTime = Time.fromNanoseconds . fromIntegral . evTime
 
-newtype BytesAllocated
-  = BytesAllocated Word64
+newtype Bytes
+  = Bytes { getBytes :: Word64 }
   deriving stock (Eq, Ord, Show)
   deriving newtype (Num, Integral, Enum, Real)
 
@@ -49,12 +49,6 @@ newtype PointEventList v a
 
 newtype IntervalEventList v a
   = IntervalEventList (KeyedVector v Time a)
-
-data GC
-  = GC { gcInterval :: !Interval
-       , gcGeneration :: !Int
-       }
-  deriving (Show)
 
 untilJust :: (a -> Maybe b) -> Plan (Is a) o b
 untilJust f = loop
@@ -71,6 +65,38 @@ yieldJust f = untilJust f >>= yield
 type EventExtractor a = EventExtractorT Identity a
 type EventExtractorT m a = ProcessT m Event a
 
+runExtractor :: EventExtractor a -> [Event] -> [a]
+runExtractor extractor events = run $ supply events extractor
+
+startEndIntervals
+  :: (EventInfo -> Bool)  -- ^ start predicate
+  -> (EventInfo -> Bool)  -- ^ end predicate
+  -> EventExtractor Interval
+startEndIntervals isStart isEnd =
+    startEndIntervals' (toMaybe  . isStart) (toMaybe . isEnd) (\interval _ _ -> interval)
+  where
+    toMaybe True  = Just ()
+    toMaybe False = Nothing
+
+startEndIntervals'
+  :: (EventInfo -> Maybe a)  -- ^ start predicate
+  -> (EventInfo -> Maybe b)  -- ^ end predicate
+  -> (Interval -> a -> b -> c)
+  -> EventExtractor c
+startEndIntervals' isStart isEnd toEvent = repeatedly $ do
+    (t0, a) <- untilJust $ withTime isStart
+    (t1, b) <- untilJust $ withTime isEnd
+    yield $! toEvent (Interval t0 t1) a b
+  where
+    withTime f ev = fmap (\x -> (eventTime ev, x)) (f $ evSpec ev)
+
+
+data GC
+  = GC { gcInterval :: !Interval
+       , gcGeneration :: !Int
+       }
+  deriving (Show)
+
 garbageCollections :: EventExtractor GC
 garbageCollections = repeatedly $ do
   t0 <- untilJust
@@ -83,10 +109,46 @@ garbageCollections = repeatedly $ do
              , gcGeneration = gen
              }
 
-heapSizes :: EventExtractor (Time, BytesAllocated)
-heapSizes = repeatedly $ do
+data NonMovingGC
+  = NonMovingGC { nmgcMarkIntervals :: [Interval]
+                , nmgcSyncInterval  :: Interval
+                , nmgcSweepInterval :: Interval
+                }
+
+nonmovingMarkIntervals :: EventExtractor Interval
+nonmovingMarkIntervals =
+    startEndIntervals
+      (\case ConcMarkBegin -> True; _ -> False)
+      (\case ConcMarkEnd _ -> True; _ -> False)
+
+nonmovingSweepIntervals :: EventExtractor Interval
+nonmovingSweepIntervals =
+    startEndIntervals
+      (\case ConcSweepBegin -> True; _ -> False)
+      (\case ConcSweepEnd -> True; _ -> False)
+
+nonmovingSyncIntervals :: EventExtractor Interval
+nonmovingSyncIntervals =
+    startEndIntervals
+      (\case ConcSyncBegin -> True; _ -> False)
+      (\case ConcSyncEnd -> True; _ -> False)
+
+nonmovingUpdRemSetFlushes :: EventExtractor Time
+nonmovingUpdRemSetFlushes = repeatedly $ do
+    yieldJust
+    $ \case ev@Event {evSpec=ConcUpdRemSetFlush _} -> Just (eventTime ev)
+            _ -> Nothing
+
+heapSizeSamples :: EventExtractor (Time, Bytes)
+heapSizeSamples = repeatedly $ do
   yieldJust $ \case
-    ev@Event{evSpec=HeapSize{sizeBytes=n}} -> Just (eventTime ev, BytesAllocated n)
+    ev@Event{evSpec=HeapSize{sizeBytes=n}} -> Just (eventTime ev, Bytes n)
+    _ -> Nothing
+
+heapLiveSamples :: EventExtractor (Time, Bytes)
+heapLiveSamples = repeatedly $ do
+  yieldJust $ \case
+    ev@Event{evSpec=HeapLive{liveBytes=n}} -> Just (eventTime ev, Bytes n)
     _ -> Nothing
 
 newtype Capability
