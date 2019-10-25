@@ -90,7 +90,6 @@ startEndIntervals' isStart isEnd toEvent = repeatedly $ do
   where
     withTime f ev = fmap (\x -> (eventTime ev, x)) (f $ evSpec ev)
 
-
 data GC
   = GC { gcInterval :: !Interval
        , gcGeneration :: !Int
@@ -98,16 +97,11 @@ data GC
   deriving (Show)
 
 garbageCollections :: EventExtractor GC
-garbageCollections = repeatedly $ do
-  t0 <- untilJust
-      $ \case ev@Event{evSpec=StartGC} -> Just (eventTime ev)
-              _ -> Nothing
-  (t1, gen) <- untilJust
-      $ \case ev@Event{evSpec=GCStatsGHC{..}} -> Just (eventTime ev, gen)
-              _ -> Nothing
-  yield $ GC { gcInterval = Interval t0 t1
-             , gcGeneration = gen
-             }
+garbageCollections =
+  startEndIntervals'
+    (\case StartGC -> Just (); _ -> Nothing)
+    (\case GCStatsGHC{..} -> Just gen; _ -> Nothing)
+    (\gcInterval _ gcGeneration -> GC{..})
 
 data NonMovingGC
   = NonMovingGC { nmgcMarkIntervals :: [Interval]
