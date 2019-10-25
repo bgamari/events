@@ -60,13 +60,29 @@ untilJust f = loop
         Nothing -> loop
 
 yieldJust :: (a -> Maybe b) -> Plan (Is a) b ()
-yieldJust f = untilJust f >>= yield
+yieldJust f = do
+    x <- untilJust f
+    yield $! x
 
 type EventExtractor a = EventExtractorT Identity a
 type EventExtractorT m a = ProcessT m Event a
 
 runExtractor :: EventExtractor a -> [Event] -> [a]
 runExtractor extractor events = run $ supply events extractor
+
+sampleTimes'
+  :: (EventInfo -> Maybe a)
+  -> EventExtractor (Time, a)
+sampleTimes' isInteresting = repeatedly $ do
+    yieldJust $ \ev -> fmap (\x -> (eventTime ev, x)) (isInteresting $ evSpec ev)
+
+sampleTimes
+  :: (EventInfo -> Bool)
+  -> EventExtractor Time
+sampleTimes isInteresting = repeatedly $ do
+    yieldJust $ \ev -> case isInteresting (evSpec ev) of
+                         True -> Just $ eventTime ev
+                         False -> Nothing
 
 startEndIntervals
   :: (EventInfo -> Bool)  -- ^ start predicate
@@ -89,6 +105,7 @@ startEndIntervals' isStart isEnd toEvent = repeatedly $ do
     yield $! toEvent (Interval t0 t1) a b
   where
     withTime f ev = fmap (\x -> (eventTime ev, x)) (f $ evSpec ev)
+
 
 data GC
   = GC { gcInterval :: !Interval
@@ -128,22 +145,16 @@ nonmovingSyncIntervals =
       (\case ConcSyncEnd -> True; _ -> False)
 
 nonmovingUpdRemSetFlushes :: EventExtractor Time
-nonmovingUpdRemSetFlushes = repeatedly $ do
-    yieldJust
-    $ \case ev@Event {evSpec=ConcUpdRemSetFlush _} -> Just (eventTime ev)
-            _ -> Nothing
+nonmovingUpdRemSetFlushes =
+  sampleTimes (\case ConcUpdRemSetFlush{} -> True; _ -> False)
 
 heapSizeSamples :: EventExtractor (Time, Bytes)
-heapSizeSamples = repeatedly $ do
-  yieldJust $ \case
-    ev@Event{evSpec=HeapSize{sizeBytes=n}} -> Just (eventTime ev, Bytes n)
-    _ -> Nothing
+heapSizeSamples =
+  sampleTimes' (\case HeapSize{sizeBytes=n} -> Just (Bytes n); _ -> Nothing)
 
 heapLiveSamples :: EventExtractor (Time, Bytes)
-heapLiveSamples = repeatedly $ do
-  yieldJust $ \case
-    ev@Event{evSpec=HeapLive{liveBytes=n}} -> Just (eventTime ev, Bytes n)
-    _ -> Nothing
+heapLiveSamples =
+  sampleTimes' (\case HeapLive{liveBytes=n} -> Just (Bytes n); _ -> Nothing)
 
 newtype Capability
   = Capability { getCapability :: Int }
