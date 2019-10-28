@@ -5,13 +5,16 @@
 module Main where
 
 import Data.Monoid
+import Data.Foldable
+import Data.Semigroup
 import GHC.RTS.Events as Event
 import GHC.RTS.Events.Incremental as Event
 import qualified Data.ByteString.Lazy as BSL
 import Diagrams.Backend.SVG
 import qualified Diagrams.TwoD.Text as Diagrams
 import Diagrams
-import Data.Machine
+import Data.Machine hiding (fold)
+import Data.Coerce
 import Data.Colour
 import Data.Colour.Names as Colours
 import Linear.Affine
@@ -76,22 +79,45 @@ durationPlot = foldMap toDuration
         x0 = toSeconds $ intervalStart x
         width = diffToSeconds $ intervalStart x .-. intervalEnd x
 
-barPlot :: [(Time, Double)] -> Path V2 Double
-barPlot = foldMap toBar
+barPlot :: (Show a, Real a) => [(Time, a)] -> QDiagram SVG V2 Double Any
+barPlot [] = mempty
+barPlot xs = barPlot' (minMax $ map snd xs) xs
+
+barPlot' :: (Show a, Real a) => (a,a) -> [(Time, a)] -> QDiagram SVG V2 Double Any
+barPlot' range@(min,max) xs = yAxis' range <> stroke (foldMap toBar xs)
   where
+    span = realToFrac (max - min)
     toBar (t, y) =
       pathFromTrailAt
-        (trailFromOffsets [V2 0 y])
+        (trailFromOffsets [V2 0 (realToFrac (y-min) / span)])
         (p2 (toSeconds t, 0))
 
-linePlot :: [(Time, Double)] -> Path V2 Double
+linePlot :: (Show a, Real a) => [(Time, a)] -> QDiagram SVG V2 Double Any
 linePlot [] = mempty
-linePlot xs =
-  pathFromTrailAt
+linePlot xs = linePlot' (minMax $ map snd xs) xs
+
+linePlot' :: (Show a, Real a) => (a,a) -> [(Time, a)] -> QDiagram SVG V2 Double Any
+linePlot' _ [] = mempty
+linePlot' range@(min,max) xs =
+  yAxis' range <>
+  stroke (pathFromTrailAt
     (trailFromVertices $ map toPt xs)
-    (toPt (head xs))
+    (toPt (head xs)))
   where
-    toPt (t, y) = p2 (toSeconds t, y)
+    span = realToFrac (max - min)
+    toPt (t, y) = p2 (toSeconds t, realToFrac (y - min) / span)
+
+minMax :: (Foldable f, Ord a) => f a -> (a,a)
+minMax xs = (minimum xs, maximum xs)
+
+yAxis' :: (Show a, Real a, Renderable (Diagrams.Text Double) b, Renderable (Path V2 Double) b)
+       => (a, a) -> QDiagram b V2 Double Any
+yAxis' (yMin, yMax) =
+    axis <> foldMap yTick [(0, yMin), (1, yMax)] # fontSize 2
+  where
+    axis = stroke $ pathFromTrail (trailFromVertices [ p2 (0, 0), p2 (0, 1) ])
+    yTick (y,lbl) = translateY (realToFrac y)
+      $ alignR $ alignR (strutX 1 <> alignedText 1 0.5 (show lbl)) ||| hrule 0.1
 
 heatMap :: forall b.
            (Renderable (Path V2 Double) b)
@@ -119,23 +145,32 @@ heatToColor m n = Colours.green `withOpacity` (realToFrac n / realToFrac m)
 gcPausesPlot :: [GC] -> Path V2 Double
 gcPausesPlot = durationPlot . map gcInterval
 
-readIt :: IO [Event]
-readIt = do
-  Right (elog, _) <- Event.readEventLog <$> BSL.readFile "hi.eventlog"
+readIt :: FilePath -> IO [Event]
+readIt path = do
+  Right (elog, _) <- Event.readEventLog <$> BSL.readFile path
   let events = Event.sortEvents $ Event.events $ Event.dat elog
   return $ events
 
+matchPrefixMsg :: String -> EventExtractor (Time, Double)
+matchPrefixMsg prefix = sampleTimes' $ matchMessageEvent $ matchPrefix prefix
+
+doIt :: FilePath -> IO ()
+doIt path = do
+  events <- readIt path
+  plotIt (path++".svg") events
+
 main :: IO ()
 main = do
-  events <- readIt
-  --print $ length $ run $ supply events garbageCollections
+  events <- readIt "hi.eventlog"
+  --print $ runExtractor nowLive events
   --print $ take 10 heapSizeEvents
   --print $ length $ run $ supply events (capThreads $ Capability 0)
   --mapM_ print $ runIt $ runT $ supply events capThreads'
-  plotIt events
+  --mapM_ print $ [ msg | Event { evSpec  = Message msg } <-  events ]
+  plotIt "hi.svg" events
 
-plotIt :: [Event] -> IO ()
-plotIt events = renderSVG "hi.svg" size (plotDiagram events)
+plotIt :: FilePath -> [Event] -> IO ()
+plotIt outPath events = renderSVG outPath size (plotDiagram events)
   where
     size :: SizeSpec V2 Double
     size = dims $ V2 600 400
@@ -174,12 +209,12 @@ plotDiagram events = dia
           # scaleY 3
         )
       , ( "heap size"
-        , stroke (linePlot meanHeapSize)
-          # lw 0.1 # scaleY 3
+        , linePlot meanHeapSize
+          # lw 0.1 # scaleY 1
         ) -- <> stroke (barPlot meanHeapSize)
       , ( "live heap"
-        , stroke (linePlot $ fmap (fmap $ (/1e8) . realToFrac) heapLiveEvents)
-          # lw 0.1 # lc Colours.purple # scaleY 3
+        , linePlot' (Bytes 0, Bytes $ 100*1024^2) heapLiveEvents
+          # lw 0.1 # lc Colours.purple # scaleY 1
         )
       , ( "major gc starts"
         , stroke (eventPlot
@@ -206,6 +241,30 @@ plotDiagram events = dia
       , ( "syncing"
         , stroke (durationPlot $ runExtractor nonmovingSyncIntervals events)
           # fc Colours.grey # lw 0
+        )
+      , ( "now live"
+        , barPlot' (0,300e6) (runExtractor (matchPrefixMsg "now live: ") events)
+          # lw 0.2
+        )
+      , ( "new_allocs"
+        , barPlot' (0,300e6) (runExtractor (matchPrefixMsg "new_allocs: ") events)
+          # lw 0.2
+        )
+      , ( "correction"
+        , barPlot (runExtractor (matchPrefixMsg "Major GC finished: corr=") events)
+          # lw 0.2 # scaleY 1
+        )
+      , ( "resize(max)"
+        , barPlot' (0,300e6) (runExtractor (matchPrefixMsg "resize_gen: max: ") events)
+          # lw 0.2
+        )
+      , ( "needed"
+        , barPlot' (0,300e6) (runExtractor (matchPrefixMsg "calcNeeded(1): needed=") events)
+          # lw 0.2
+        )
+      , ( "needed max"
+        , barPlot' (0,300e6) (runExtractor (matchPrefixMsg "calcNeeded(1): max=") events)
+          # lw 0.2
         )
       , ( "flushes"
         , stroke (eventPlot $ runExtractor nonmovingUpdRemSetFlushes events)

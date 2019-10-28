@@ -13,6 +13,7 @@ import Foreign.Storable
 import Data.Foldable
 import Data.Word
 import Data.Int
+import Data.List (stripPrefix)
 import Data.Vector.Unboxed.Deriving
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed as VU
@@ -63,6 +64,11 @@ matchUserMarkerEvent _ _ = Nothing
 matchMessageEvent :: (String -> Maybe a) -> EventInfo -> Maybe a
 matchMessageEvent f (Message msg) = f msg
 matchMessageEvent _ _ = Nothing
+
+matchPrefix :: Read a => String -> String -> Maybe a
+matchPrefix prefix str
+  | Just s <- prefix `stripPrefix` str = Just $ read s
+  | otherwise = Nothing
 
 data GC
   = GC { gcInterval :: !Interval
